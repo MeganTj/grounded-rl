@@ -116,9 +116,13 @@ def main():
                 "VLLM_LOGGING_LEVEL": "INFO",
                 "TORCH_NCCL_AVOID_RECORD_STREAMS": "1",
                 "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False",
+                "RAY_DEBUG": "1" if ppo_config.trainer.debug else "0", 
             }
         }
         ray.init(runtime_env=runtime_env)
+
+        # print runtime environment
+        print(runtime_env)
 
     runner = Runner.remote()
     ray.get(runner.run.remote(ppo_config))
