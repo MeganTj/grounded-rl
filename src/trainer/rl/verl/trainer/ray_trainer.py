@@ -42,7 +42,8 @@ from ..utils.logger import Tracker
 from ..utils.py_functional import convert_dict_to_str, timer
 from ..utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seqlen_unbalance
 from ..workers.fsdp_workers import FSDPWorker
-from ..workers.rollout.multiturn.rollout_multiturn import RolloutMultiturn
+# from ..workers.rollout.multiturn.rollout_multiturn import RolloutMultiturn
+from ..workers.rollout.multiturn.rollout_multiturn_bbox import RolloutMultiturn
 from ..workers.reward import FunctionRewardManager
 from . import core_algos
 from .config import PPOConfig
@@ -452,11 +453,14 @@ class RayPPOTrainer:
         if self.config.trainer.load_checkpoint_path is None:
             return
 
-        if "global_step_" not in self.config.trainer.load_checkpoint_path.strip(os.path.sep).split(os.path.sep)[-1]:
-            raise ValueError("`load_checkpoint_path` should end with `global_step_*`.")
+        # if "global_step_" not in self.config.trainer.load_checkpoint_path.strip(os.path.sep).split(os.path.sep)[-1]:
+        #     raise ValueError("`load_checkpoint_path` should end with `global_step_*`.")
 
         print(f"Load from checkpoint: {self.config.trainer.load_checkpoint_path}.")
-        self.global_step = int(self.config.trainer.load_checkpoint_path.strip(os.path.sep).split("global_step_")[-1])
+        if "global_step_" not in self.config.trainer.load_checkpoint_path.strip(os.path.sep).split(os.path.sep)[-1]:
+            self.global_step = 0
+        else:
+            self.global_step = int(self.config.trainer.load_checkpoint_path.strip(os.path.sep).split("global_step_")[-1])
         actor_path = os.path.join(self.config.trainer.load_checkpoint_path, "actor")
         self.actor_rollout_wg.load_checkpoint(actor_path)
         if self.use_critic:
@@ -494,6 +498,7 @@ class RayPPOTrainer:
         The light-weight advantage computation is done on the driver process.
         """
         self.logger = Tracker(loggers=self.config.trainer.logger, config=self.config.to_dict())
+        # breakpoint()
         self.global_step = 0
         val_metrics: Optional[Dict[str, Any]] = None
 

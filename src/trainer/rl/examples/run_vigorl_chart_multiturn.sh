@@ -15,17 +15,19 @@ condition=${1:-"vanilla_thinking"}
 SAVE_PATH_BASE="$DATA_ROOT/checkpoints/rl"
 IMAGE_ROOT="$DATA_ROOT"
 
-NUM_GPUS=2 # number of gpus on node
+NUM_GPUS=4 # number of gpus on node
+MAX_NUM_BATCHED_TOKENS=8192
 
 trap 'ray stop --force; exit' SIGINT SIGTERM
 
-MULTITURN=false
+MULTITURN=true
 CROP_SIZE=512
 OFFSET=50
 ADD_DOT=false
 MIN_PIXELS=3136
 MAX_PIXELS=4194304
-DEBUG=false
+DEBUG=true
+MAX_MODEL_LEN=8192
 
 if [ "$domain" == "web_grounding" ]; then
 
@@ -100,7 +102,7 @@ elif [ "$domain" == "chart" ]; then
         CROP_SIZE=384
         OFFSET=50 # crop offset
         ADD_DOT=true
-        REWARD_FUNCTION=./examples/reward_function/chart.py:compute_score_with_error
+        REWARD_FUNCTION=./examples/reward_function/chart_multibbox.py:compute_score_with_error
         # REWARD_FUNCTION=./examples/reward_function/point_in_bbox_multicrop.py:point_in_bbox_multicrop_compute_score
 
     fi
@@ -226,7 +228,7 @@ SAVE_LIMIT=50
 SAVE_FREQ=25
 MAX_STEPS=500 # NOTE: this will override the total_episodes
 VAL_BEFORE_TRAIN=true
-KL_COEF=1.0e-8
+KL_COEF=1.0e-2
 VAL_FREQ=25
 VAL_BATCH_SIZE=1024
 REF_UPDATE_STEPS=99999
@@ -268,7 +270,7 @@ ADAPTIVE_LR=false
 if [ "$SAVE_MEM" == "true" ]; then
   VAL_BATCH_SIZE=1024
   MICRO_BATCH_SIZE_PER_DEVICE_FOR_UPDATE=2
-  MICRO_BATCH_SIZE_PER_DEVICE_FOR_EXPERIENCE=8
+  MICRO_BATCH_SIZE_PER_DEVICE_FOR_EXPERIENCE=2
   TORCH_DTYPE=bf16
   OPTIM_STRATEGY=adamw_bf16
 fi
@@ -282,9 +284,12 @@ if [ "$MULTITURN" == "true" ]; then
   PADDING_FREE=false
   VAL_FREQ=-1
   VAL_BEFORE_TRAIN=false
-  KL_COEF=1.0e-8
+  KL_COEF=1.0e-2
   WARMUP_RATIO=0.05
   MASK_NEGATIVE_ADVANTAGE=false
+  MAX_RESPONSE_LENGTH=16384
+  MAX_NUM_BATCHED_TOKENS=32768
+  MAX_MODEL_LEN=32768
   ADAPTIVE_LR=false
 fi
 
@@ -322,6 +327,11 @@ SAVE_TAG="${SAVE_TAG}_${HYPERPARAM_TAG}"
 # EXPERIMENT_TAG="_SFTINIT"
 SAVE_PATH=${SAVE_PATH_BASE}/${SAVE_TAG}_${DATETIME}${EXPERIMENT_TAG}
 mkdir -p ${SAVE_PATH}
+
+# ray start --head --port=6380 --dashboard-port=8266 --node-ip-address=127.0.0.1
+# sleep 10  # Wait for cluster to fully initialize
+# export RAY_ADDRESS="ray://localhost:10002"
+python -c "import ray; ray.init(); print('Connected successfully'); ray.shutdown()"
 
 python3 -m verl.trainer.main \
     config=examples/config.yaml \
@@ -362,7 +372,9 @@ python3 -m verl.trainer.main \
     worker.rollout.draw_dot=${ADD_DOT} \
     worker.rollout.offset=${OFFSET} \
     worker.rollout.max_generation_length_per_turn=${MAX_GENERATION_LENGTH_PER_TURN} \
+    worker.rollout.max_num_batched_tokens=${MAX_NUM_BATCHED_TOKENS} \
     worker.rollout.stop_strings=${STOP_STRINGS} \
+    worker.rollout.max_model_len=${MAX_MODEL_LEN} \
     worker.ref.offload.offload_params=${REF_OFFLOAD_PARAMS} \
     worker.reward.reward_function=${REWARD_FUNCTION} \
     trainer.experiment_name=${SAVE_TAG}_${DATETIME}${EXPERIMENT_TAG} \

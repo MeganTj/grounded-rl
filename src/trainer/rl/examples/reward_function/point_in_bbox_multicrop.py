@@ -182,7 +182,7 @@ def accuracy_reward(pred_ans: str, gt_ans: str) -> float:
         return 0.0
 
 
-def point_in_bbox_multicrop_compute_score(predict_str: str, ground_truth: str) -> float:
+def point_in_bbox_multicrop_compute_score(predict_str: str, ground_truth: str, extra_info) -> float:
     format = format_reward(predict_str)
     accuracy = accuracy_reward(predict_str, ground_truth)
     return {

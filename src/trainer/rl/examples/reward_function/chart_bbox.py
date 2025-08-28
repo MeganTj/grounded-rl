@@ -163,7 +163,7 @@ def grade_response(ground_truth, predicted_answer, ground_truth_precision, error
             # Ground truth is a single number
             if len(predicted_numbers) != 1:
                 return False
-            
+            # breakpoint()
             gt_float = float(ground_truth_formatted)
             pred_float = float(predicted_numbers[0])
             return abs(gt_float - pred_float) <= error_margin
@@ -343,7 +343,7 @@ def coordinate_reward(predict_str: str) -> float:
 
 #     return None
 
-def extract_bbox_from_response(text: str) -> List[Tuple[int, int, int, int]]:
+def extract_bbox_from_response(text: str) -> List[List[int]]:
     """
     Extract bounding boxes from LLM responses as tuples or lists of 4 integers.
     
@@ -364,14 +364,14 @@ def extract_bbox_from_response(text: str) -> List[Tuple[int, int, int, int]]:
     tuple_matches = re.findall(tuple_pattern, text)
     
     for match in tuple_matches:
-        coords.append(tuple(map(int, match)))
+        coords.append(list(map(int, match)))
     
     # Pattern for lists: [x1, y1, x2, y2]
     list_pattern = r'\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]'
     list_matches = re.findall(list_pattern, text)
     
     for match in list_matches:
-        coords.append(tuple(map(int, match)))
+        coords.append(list(map(int, match)))
     
     return coords
 
@@ -384,6 +384,8 @@ def compute_score_with_error(predict_str: str, ground_truth: str, extra_info, fo
     predict_str = re.sub(r"\s*(<|>|/)\s*", r"\1", predict_str)  # handle qwen2.5vl-32b format
     format_score = format_reward(predict_str)
     # coordinate_score = coordinate_reward(predict_str)
+    if len(ground_truth) == 0:
+        breakpoint()
     accuracy_score = accuracy_reward_with_error(predict_str, ground_truth, 
     extra_info["ground_truth_precision"], extra_info["error_margin"])
     iou_score = 0
@@ -509,11 +511,103 @@ def compute_score_with_error(predict_str: str, ground_truth: str, extra_info, fo
 
 #     return scores
 
-if __name__ == "__main__":
-    test_response = """
-    The first object is at (10, 20, 100, 200) and the second at [50, 60, 150, 250].
-    Also found: (25, 35, 125, 235) and [75, 85, 175, 285].
-    """
+# Test cases
+def test_extract_bbox_from_response():
     
-    result = extract_bbox_from_response(test_response)
-    print(f"Found bounding boxes: {result}")
+    # Basic tuple tests
+    test_cases = [
+        # Single tuple - basic
+        ("The object is at (10, 20, 100, 200)", [[10, 20, 100, 200]]),
+        
+        # Single list - basic  
+        ("The bounding box is [50, 75, 150, 175]", [[50, 75, 150, 175]]),
+        
+        # Multiple tuples
+        ("Found objects at (10, 20, 30, 40) and (50, 60, 70, 80)", 
+         [[10, 20, 30, 40], [50, 60, 70, 80]]),
+        
+        # Multiple lists
+        ("Boxes: [10, 20, 30, 40], [100, 200, 300, 400]", 
+         [[10, 20, 30, 40], [100, 200, 300, 400]]),
+        
+        # Mixed tuples and lists
+        ("Detection results: (10, 20, 30, 40) and [50, 60, 70, 80]",
+         [[10, 20, 30, 40], [50, 60, 70, 80]]),
+        
+        # With varying whitespace
+        ("Coordinates: ( 10 , 20 , 30 , 40 ) and [ 50 , 60 , 70 , 80 ]",
+         [[10, 20, 30, 40], [50, 60, 70, 80]]),
+        
+        # No whitespace
+        ("Tight format: (10,20,30,40) and [50,60,70,80]",
+         [[10, 20, 30, 40], [50, 60, 70, 80]]),
+        
+        # Large numbers
+        ("Big coordinates: (1000, 2000, 3000, 4000)",
+         [[1000, 2000, 3000, 4000]]),
+        
+        # Zero coordinates
+        ("Starting at origin: (0, 0, 100, 100)",
+         [[0, 0, 100, 100]]),
+        
+        # Empty string
+        ("", []),
+        
+        # No coordinates
+        ("This text has no bounding boxes in it", []),
+        
+        # Partial matches (should not match)
+        ("Incomplete: (10, 20, 30) or [40, 50]", []),
+        
+        # Too many numbers (should not match)
+        ("Too many: (10, 20, 30, 40, 50) or [60, 70, 80, 90, 100]", []),
+        
+        # Nested in sentences
+        ("The person detected at (100, 150, 200, 250) is walking towards the car at [300, 400, 500, 600].",
+         [[100, 150, 200, 250], [300, 400, 500, 600]]),
+        
+        # With negative signs (should not match since pattern looks for \d+)
+        ("Negative coords: (-10, -20, 30, 40)", []),
+        
+        # With decimal points (should not match)
+        ("Decimal coords: (10.5, 20.5, 30.5, 40.5)", []),
+        
+        # Multiple on same line
+        ("Objects: (10, 20, 30, 40), (50, 60, 70, 80), [90, 100, 110, 120]",
+         [[10, 20, 30, 40], [50, 60, 70, 80], [90, 100, 110, 120]]),
+        
+        # Mixed with other parentheses/brackets
+        ("Function call foo(a, b) and array[i] with bbox (10, 20, 30, 40)",
+         [[10, 20, 30, 40]]),
+        
+        # Realistic LLM response
+        ("""I found 2 objects in the image:
+         1. A person at coordinates (145, 67, 289, 456)  
+         2. A car located at [523, 234, 789, 445]
+         The confidence scores are 0.95 and 0.87 respectively.""",
+         [[145, 67, 289, 456], [523, 234, 789, 445]]),
+
+          # Realistic LLM response
+        ("""I found 2 objects in the image:
+         1. A person at coordinates 
+         ```json
+        [(145, 67, 289, 456)  
+         ```
+         2. A car located at [523, 234, 789, 445]
+         The confidence scores are 0.95 and 0.87 respectively.""",
+         [[145, 67, 289, 456], [523, 234, 789, 445]])
+    ]
+    
+    print("Running tests...")
+    for i, (input_text, expected) in enumerate(test_cases):
+        result = extract_bbox_from_response(input_text)
+        status = "✓ PASS" if result == expected else "✗ FAIL"
+        print(f"Test {i+1}: {status}")
+        if result != expected:
+            print(f"  Input: {repr(input_text)}")
+            print(f"  Expected: {expected}")
+            print(f"  Got: {result}")
+        print()
+
+if __name__ == "__main__":
+    test_extract_bbox_from_response()

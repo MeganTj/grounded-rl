@@ -79,6 +79,9 @@ class FunctionRewardManager:
                 valid_response_ids, skip_special_tokens=self.config.skip_special_tokens
             )
             ground_truth = data_item.non_tensor_batch["ground_truth"]
+            if len(ground_truth) == 0:
+                breakpoint()
+            # breakpoint()
             extra_info = data_item.non_tensor_batch.get("extra_info", {})
             score = self.reward_fn(response_str, ground_truth, extra_info=extra_info)
 

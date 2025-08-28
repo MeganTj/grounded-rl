@@ -18,129 +18,192 @@ _TAG_RE = re.compile(r"<(/?)(tool_call|observation|think|answer)>", re.IGNORECAS
 # _TOOL_JSON_RE = re.compile(r"<tool_call>\s*({.*?})\s*</tool_call>", re.DOTALL)
 _TOOL_JSON_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
 
+
+def _parse_bbox(text: str):
+    """
+    Extract a bounding box from text of the form '[(x1, y1, x2, y2)]'.
+    Returns [(x1, y1, x2, y2)] as a list of tuples of ints if found, otherwise None.
+    """
+    try:
+        text = text.strip()
+        json_text = json.loads(text)
+        return json_text["bbox_2d"]
+        # return json_text["arguments"]["bbox_2d"]
+    except Exception as e:
+        return None
+
+# def format_reward(predict_str: str):
+#     s = predict_str.strip()
+    
+#     # Extract all <think> snippets
+#     think_snippets = extract_think_snippets(s)
+    
+#     if not think_snippets:
+#         return 0.0
+    
+#     total_score = 0.0
+#     all_bboxes = []
+    
+#     for i, snippet in enumerate(think_snippets):
+#         is_last_snippet = (i == len(think_snippets) - 1)
+#         score, bboxes = grade_think_snippet(snippet, is_last_snippet)
+#         total_score += score
+#         all_bboxes.extend(bboxes)
+    
+#     # Calculate format score (average across snippets)
+#     format_score = total_score / len(think_snippets)
+    
+#     # Final score: format_score * 1 if at least one bbox found, otherwise format_score * 0
+#     bbox_multiplier = 1.0 if all_bboxes else 0.0
+#     final_score = format_score * bbox_multiplier
+    
+#     return final_score
+
+
 def format_reward(predict_str: str):
     s = predict_str.strip()
-
-    # 1) must finish with </answer> (optionally followed by one EOS token)
-    if not re.search(r"</answer>\s*(<\|im_end\|>)?\s*$", s, re.DOTALL):
-        return 0.0
-
-    # 2) walk through the high‑level tag sequence to enforce grammar
-    tags_iter = _TAG_RE.finditer(s)
-    state = "think_open"            # expected next tag
-    for m in tags_iter:
-        tag = m.group(0).lower()
-
-        if state == "tool_open":
-            if tag != "<tool_call>":
-                return 0.0
-            state = "tool_close"
-
-        elif state == "tool_close":
-            if tag != "</tool_call>":
-                return 0.0
-            state = "obs_open"
-
-        elif state == "obs_open":
-            if tag != "<observation>":
-                return 0.0
-            state = "obs_close"
-
-        elif state == "obs_close":
-            if tag != "</observation>":
-                return 0.0
-            state = "think_open"
-
-        elif state == "think_open":
-            if tag != "<think>":
-                return 0.0
-            state = "think_close"
-
-        elif state == "think_close":
-            if tag != "</think>":
-                return 0.0
-            state = "post_think"
-
-        elif state == "post_think":
-            if tag == "<tool_call>":
-                state = "tool_close"         # start another round
-            elif tag == "<answer>":
-                state = "answer_close"
-            else:
-                return 0.0
-
-        elif state == "answer_close":
-            if tag != "</answer>":
-                return 0.0
-            state = "end"
-
-        elif state == "end":
-            # no structural tags allowed after </answer>
-            return 0.0
-
-    if state != "end":
-        return 0.0   # we never saw a complete <answer> … </answer> block
-
-    # 3) validate each <tool_call> JSON and coordinate schema
-    # Also track unique coordinates for reward calculation
-    previous_coords = []
-    min_distance_threshold = 10  # Minimum distance in pixels between coordinates
     
-    for m in _TOOL_JSON_RE.finditer(s):
-        try:
-            obj = json.loads(m.group(1))
-            arguments = obj.get("arguments", {})
-            coord = arguments.get("bbox_2d", None)
-            label = arguments.get("label", None)
-            if (not isinstance(coord, list) or len(coord) != 4 or
-                not all(isinstance(x, int) for x in coord)):
-                return 0.0
-            if label is None:
-                return 0.0
-            
-            # Add valid coordinate to our tracking list
-            previous_coords.append(coord)
-        except Exception:
-            return 0.0
-
-    # 4) validate final answer is a tuple of two ints
-    ans_match = re.search(r"<answer>\s*\(([^)]*)\)\s*</answer>", s)
-    if not ans_match:
+    # Extract all <think> snippets
+    # breakpoint()
+    think_snippets = extract_assistant_snippets(s)
+    
+    if not think_snippets:
         return 0.0
-    # try:
-    #     ans_tuple = ast.literal_eval("(" + ans_match.group(1).strip() + ")")
-    #     if (not isinstance(ans_tuple, tuple) or len(ans_tuple) != 2 or
-    #         not all(isinstance(x, int) for x in ans_tuple)):
-    #         return 0.0
-    # except Exception:
-    #     return 0.0
-    return 1.0
-    # 5) base reward + bonus for extra turns with sufficient diversity
-    reward = 1.0
+    
+    total_score = 0.0
+    has_complete_tool_obs = False
+    
+    for i, snippet in enumerate(think_snippets):
+        is_last_snippet = (i == len(think_snippets) - 1)
+        score, has_tool_obs = grade_think_snippet(snippet, is_last_snippet)
+        total_score += score
+        if has_tool_obs:
+            has_complete_tool_obs = True
+    
+    # Calculate format score (average across snippets)
+    format_score = total_score / len(think_snippets)
+    
+    # Final score: format_score * 1 if at least one complete tool_call/observation pair found, otherwise format_score * 0
+    multiplier = 1.0 if has_complete_tool_obs else 0.0
+    final_score = format_score * multiplier
+    
+    return final_score
 
-    # Count unique and sufficiently distant coordinates
-    unique_coords = []
-    for coord in previous_coords:
-        # Check if this coordinate is too close to any we've already counted
-        too_close = False
-        for existing_coord in unique_coords:
-            # Calculate Euclidean distance
-            distance = math.sqrt((coord[0] - existing_coord[0])**2 + 
-                                 (coord[1] - existing_coord[1])**2)
-            if distance < min_distance_threshold:
-                too_close = True
-                break
+
+# def extract_think_snippets(text: str):
+#     """
+#     Extract snippets that start with <think> and go until the next <think> (or end of string).
+#     Returns list of snippet strings.
+#     """
+#     snippets = []
+    
+#     # Find all <think> start positions
+#     think_starts = []
+#     for match in re.finditer(r"<think>", text, re.IGNORECASE):
+#         think_starts.append(match.start())
+    
+#     if not think_starts:
+#         return snippets
+    
+#     for i, start_pos in enumerate(think_starts):
+#         if i < len(think_starts) - 1:
+#             # Not the last <think>, go until the next <think>
+#             next_start_pos = think_starts[i + 1]
+#             snippet = text[start_pos:next_start_pos]
+#         else:
+#             # Last <think>, go to end of string
+#             snippet = text[start_pos:]
         
-        if not too_close:
-            unique_coords.append(coord)
+#         snippets.append(snippet)
     
-    # Award bonus only for unique, sufficiently distant coordinates
-    # TODO: should we keep this?
-    num_unique_turns = len(unique_coords)
-    if num_unique_turns > 1:
-        reward += 0.2 * (num_unique_turns - 1)
+#     return snippets
 
-    return reward
+def extract_assistant_snippets(text: str):
+    """
+    Extract snippets that are between "assistant" strings, as well as from 
+    beginning of string to first "assistant" and from last "assistant" to end.
+    Does not include the "assistant" strings themselves in the snippets.
+    Returns list of snippet strings.
+    """
+    snippets = []
+    
+    # Find all "assistant" start and end positions
+    assistant_matches = []
+    for match in re.finditer(r"assistant", text, re.IGNORECASE):
+        assistant_matches.append((match.start(), match.end()))
+    
+    if not assistant_matches:
+        # No "assistant" found, return entire string
+        snippets.append(text)
+        return snippets
+    
+    # Extract snippet from beginning of string to first "assistant"
+    if assistant_matches[0][0] > 0:
+        snippet = text[0:assistant_matches[0][0]]
+        snippets.append(snippet)
+    
+    # Extract snippets between consecutive "assistant" occurrences
+    for i in range(len(assistant_matches) - 1):
+        start_pos = assistant_matches[i][1]  # End of current "assistant"
+        end_pos = assistant_matches[i + 1][0]  # Start of next "assistant"
+        
+        snippet = text[start_pos:end_pos]
+        snippets.append(snippet)
+    
+    # Extract snippet from last "assistant" to end of string
+    if assistant_matches[-1][1] < len(text):
+        snippet = text[assistant_matches[-1][1]:]
+        snippets.append(snippet)
+    
+    return snippets
+
+def grade_think_snippet(snippet: str, is_last_snippet: bool):
+    """
+    Grade a single <think> snippet:
+    - 0.5 if it contains </think>
+    - 1.0 if it contains <tool_call>...</tool_call> immediately after </think> (non-last snippet)
+      AND the tool call contains a valid bounding box
+    - 1.0 if it contains <answer>...</answer> immediately after </think> (last snippet)
+    - 0.0 otherwise
+    
+    Returns (score, list_of_bboxes)
+    """
+    # bboxes = []
+    has_tool_obs = False
+    
+    # Check if snippet contains </think>
+    if not re.search(r"</think>", snippet, re.IGNORECASE):
+        return 0.0, False
+    
+    # Base score for having </think>
+    score = 0.5
+
+    
+    # Find position of </think>
+    think_close_match = re.search(r"</think>", snippet, re.IGNORECASE)
+    if not think_close_match:
+        return score, has_tool_obs
+    
+    # Get text after </think>
+    after_think = snippet[think_close_match.end():]
+    
+    if is_last_snippet:
+        # Last snippet: check for exact <answer>...</answer> format
+        if re.match(r"\s*<answer>.*?</answer>\s*$", after_think, re.DOTALL | re.IGNORECASE):
+            score = 1.0
+    else:
+        # breakpoint()
+        # Non-last snippet: check for exact <tool_call>...</tool_call><observation>...</observation> format
+        tool_obs_match = re.match(r"\s*<tool_call>.*?</tool_call>\s*<observation>.*?</observation>\s*$", 
+                                      after_think, re.DOTALL | re.IGNORECASE)
+        if tool_obs_match:
+            score = 1.0
+            has_tool_obs = True
+            # If tool_call format is correct but bbox parsing fails, keep score at 0.5
+    
+    return score, has_tool_obs
+
+
 
 def extract_bbox_from_response(text):
     s = text.strip()
@@ -148,9 +211,9 @@ def extract_bbox_from_response(text):
     for m in _TOOL_JSON_RE.finditer(s):
         try:
             obj = json.loads(m.group(1))
-            arguments = obj.get("arguments", {})
-            coord = arguments.get("bbox_2d", None)
-            label = arguments.get("label", None)
+            # arguments = obj.get("arguments", {})
+            coord = obj.get("bbox_2d", None)
+            label = obj.get("label", None)
             if (not isinstance(coord, list) or len(coord) != 4 or
                 not all(isinstance(x, int) for x in coord)):
                 return 0.0
@@ -162,7 +225,6 @@ def extract_bbox_from_response(text):
         except Exception:
             continue
     return coords
-
 
 def extract_numbers_from_string(text):
     """
@@ -298,7 +360,7 @@ def grade_response(ground_truth, predicted_answer, ground_truth_precision, error
             # Ground truth is a single number
             if len(predicted_numbers) != 1:
                 return False
-            
+            # breakpoint()
             gt_float = float(ground_truth_formatted)
             pred_float = float(predicted_numbers[0])
             return abs(gt_float - pred_float) <= error_margin
@@ -306,10 +368,6 @@ def grade_response(ground_truth, predicted_answer, ground_truth_precision, error
     except (ValueError, TypeError, IndexError):
         # If number parsing fails, fall back to string comparison
         return ground_truth == predicted_answer
-
-# def accuracy_reward(response: str, ground_truth: str) -> float:
-#     answer = extract_boxed_content(response)
-#     return 1.0 if grade_answer(answer, ground_truth) else 0.0
 
 def accuracy_reward_with_error(predict_str: str, ground_truth: str, ground_truth_precision, error_margin) -> float:
     # answer = extract_boxed_content(response)
@@ -371,7 +429,7 @@ def calculate_bbox_iou(pred_bboxes,  gt_bbox=None):
 
     #     # Return mean IoU
     #     return total_iou / len(pred_bboxes)
-    breakpoint()
+    # breakpoint()
     if gt_bbox is not None:
         # Calculate IoU directly between bounding boxes
         # total_iou = 0.0

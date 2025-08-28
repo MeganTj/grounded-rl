@@ -146,7 +146,12 @@ class RLHFDataset(Dataset, ImageProcessMixin):
             print(f"Format prompt: {self.format_prompt}")
 
         if self.filter_overlong_prompts:
-            self.dataset = self.dataset.filter(self._filter_overlong_prompts, desc="Filtering overlong prompts")
+            # breakpoint()
+            filtered_dataset = self.dataset.filter(self._filter_overlong_prompts, desc="Filtering overlong prompts")
+            assert len(filtered_dataset) == len(self.dataset)
+            if len(filtered_dataset) < len(self.dataset):
+                breakpoint()
+            self.dataset = filtered_dataset
 
         print(f"Image processor: {self.processor.image_processor.__class__.__name__}")
 
